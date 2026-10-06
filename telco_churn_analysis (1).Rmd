@@ -1,0 +1,165 @@
+---
+title: "Telco Customer Churn: Billing and Churn"
+author:
+  - Waqas Younas
+  - Geethima Rajapaksha
+  - Moetaz Mohfous
+  - Anas AlMazyad
+  - Saud Altalal
+
+output: html_document
+---
+
+
+## Introduction
+
+This analysis explores the IBM Telco Customer Churn dataset (7,043 customers, 33 variables). Overall, 1,869 customers (26.5%) churned. We focus on how customers are billed, a topic not examined in depth in the lecture, and ask four questions: (1) Does payment method relate to churn? (2) Does paperless billing relate to churn? (3) Is the payment method effect only a contract effect? (4) Do monthly charges differ by payment method? A final logistic regression combines these factors. We do not use Churn Score or Churn Reason, because they are recorded together with the outcome.
+
+---
+title: "Telco Customer Churn: Billing and Churn"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(readxl); library(dplyr); library(ggplot2)
+```
+
+```{r load-data}
+customers <- read_excel("Telco_customer_churn.xlsx")
+dim(customers)
+```
+## Question 1: Does payment method relate to churn?
+
+```{r q1-table}
+tab_pay <- table(customers[["Payment Method"]], customers[["Churn Label"]])
+round(prop.table(tab_pay, 1) * 100, 1)
+chisq.test(tab_pay)
+```
+
+```{r q1-plot}
+pay_churn <- customers %>%
+  group_by(`Payment Method`) %>%
+  summarise(churn_rate = mean(`Churn Value`) * 100, n = n())
+
+ggplot(pay_churn, aes(x = reorder(`Payment Method`, churn_rate), y = churn_rate)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = paste0(round(churn_rate, 1), "%")), hjust = -0.1) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  coord_flip() +
+  labs(x = NULL, y = "Churn rate (%)", title = "Churn rate by payment method")
+
+```
+
+Churn differs strongly by payment method. Customers paying by electronic check churn at 45.3%, roughly three times the rate of customers on automatic bank transfer (16.7%) or credit card (15.2%). Mailed check customers sit in between (19.1%). A chi-square test of independence gives p < 0.001, so the difference is very unlikely to be due to chance. Electronic check is also the largest group (2,365 customers), so this pattern affects a substantial part of the customer base. This is an association, not proof of causation: the payment method may simply reflect other customer characteristics, which we examine in Question 3.
+
+## Question 2: Does paperless billing relate to churn?
+
+```{r q2-table}
+tab_paper <- table(customers[["Paperless Billing"]], customers[["Churn Label"]])
+tab_paper
+round(prop.table(tab_paper, 1) * 100, 1)
+chisq.test(tab_paper)
+```
+
+```{r q2-plot}
+ggplot(customers, aes(x = `Paperless Billing`, fill = `Churn Label`)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Paperless billing", y = "Share of customers",
+       fill = "Churned", title = "Churn by paperless billing")
+```
+
+Customers with paperless billing churn at 33.6%, about twice the rate of customers without it (16.3%). A chi-square test of independence confirms that the difference is significant (χ²(1) = 258.28, p < 0.001). Paperless billing is also the more common option (4,171 of 7,043 customers), so this pattern affects most of the customer base. This is an association, not proof of causation. Paperless billing may overlap with electronic check payment and with Month-to-month contracts, so part of this effect may be shared with the factors in Questions 1 and 3. We test this in the final model.
+
+
+## Question 3: Is it just contract type?
+```{r q3}
+heat <- customers %>%
+  group_by(Contract, `Payment Method`) %>%
+  summarise(churn_rate = mean(`Churn Value`) * 100, n = n())
+
+ggplot(heat, aes(x = Contract, y = `Payment Method`, fill = churn_rate)) +
+  geom_tile() +
+  geom_text(aes(label = round(churn_rate, 1))) +
+  scale_fill_gradient(low = "white", high = "firebrick") +
+  labs(fill = "Churn %", title = "Churn rate by contract and payment method")
+```
+
+The higher churn of electronic check customers is not explained by contract type alone. Within every contract type, electronic check has the highest churn rate: 53.7% on Month-to-month contracts, 18.4% on One year and 7.7% on Two year, compared with 31.6-34.1%, 6.8-10.3% and 0.8-3.4% for the other methods. However, contract type is the stronger factor: Month-to-month customers churn at 32-54% regardless of payment method, while Two year customers rarely churn (below 8%). Payment method therefore adds to the picture, but contract length matters more. These are descriptive rates, so other characteristics may still play a part.
+
+## Question 4: Do monthly charges differ by payment method?
+
+```{r q4-summary}
+customers %>%
+  group_by(`Payment Method`) %>%
+  summarise(n = n(),
+            median_charge = median(`Monthly Charges`),
+            mean_charge = mean(`Monthly Charges`))
+
+kruskal.test(`Monthly Charges` ~ `Payment Method`, data = customers)
+```
+
+```{r q4-plot}
+ggplot(customers, aes(x = `Payment Method`, y = `Monthly Charges`)) +
+  geom_violin(fill = "lightblue") +
+  geom_boxplot(width = 0.15) +
+  coord_flip() +
+  labs(x = NULL, y = "Monthly charges", title = "Monthly charges by payment method")
+```
+
+Monthly charges differ significantly across payment methods (Kruskal-Wallis χ²(3) = 1103.3, p < 0.001). Electronic check customers pay the most (median 80.6), followed by the two automatic methods, which are almost identical (median about 73). Mailed check customers pay far less (median 34.7), and their distribution is concentrated at low charges. This only partly links charges to churn. Electronic check combines the highest charges with the highest churn (45.3%), but mailed check customers have much lower charges and still churn at 19.1%, close to the automatic methods (15.2-16.7%). Price alone therefore does not explain churn. Payment method and contract type seem to matter beyond charges, which a combined model can test.
+
+## Combined model: which billing factors matter together?
+
+```{r model}
+model_data <- customers %>%
+  mutate(`Payment Method` = factor(`Payment Method`),
+         `Paperless Billing` = factor(`Paperless Billing`),
+         Contract = factor(Contract))
+
+fit <- glm(`Churn Value` ~ `Payment Method` + `Paperless Billing` +
+             Contract + `Monthly Charges`,
+           data = model_data, family = binomial)
+
+or_table <- data.frame(term = names(coef(fit)),
+                       OR = exp(coef(fit)),
+                       exp(confint.default(fit)))
+names(or_table)[3:4] <- c("low", "high")
+or_table <- or_table[or_table$term != "(Intercept)", ]
+round(or_table[, -1], 2)
+```
+
+```{r model-plot}
+ggplot(or_table, aes(x = OR, y = reorder(term, OR))) +
+  geom_pointrange(aes(xmin = low, xmax = high)) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  scale_x_log10() +
+  labs(x = "Odds ratio (log scale)", y = NULL,
+       title = "Adjusted odds ratios for churn")
+```
+
+In a logistic regression combining payment method, paperless billing, contract type and monthly charges, contract type is the strongest factor. Customers on one-year contracts have about 81% lower odds of churn than Month-to-month customers (OR 0.19, 95% CI 0.16-0.23), and on two-year contracts about 95% lower (OR 0.05, 95% CI 0.04-0.07). Electronic check remains a significant risk factor after adjustment (OR 1.96, 95% CI 1.65-2.34), as does paperless billing (OR 1.51, 95% CI 1.31-1.73). Credit card payment does not differ from bank transfer, and mailed check is borderline (OR 1.23, 95% CI 1.00-1.51). Each extra unit of monthly charge adds only a small increase in odds (OR 1.01). The effect of electronic check is therefore smaller than the raw rates suggested, but it does not disappear. Odds ratios describe association, not causation, and this model does not include other customer characteristics such as tenure or services.
+
+## Findings
+
+**Main patterns**
+
+1. **Contract type is the strongest factor.** Month-to-month customers churn at 32-54% depending on payment method, while two-year customers churn below 8%. In the combined model, one-year and two-year contracts reduce the odds of churn by about 81% and 95%.
+2. **Electronic check is a clear risk signal.** Its raw churn rate is 45.3%, versus 15-19% for the other methods. The gap shrinks after adjustment but remains (OR 1.96), and it holds within every contract type.
+3. **Paperless billing is associated with higher churn.** The rate is 33.6% versus 16.3%, and the effect remains after adjustment (OR 1.51).
+4. **Charges alone do not explain churn.** Electronic check customers pay the most (median 80.6), but mailed check customers pay far less (median 34.7) and still churn at 19.1%. Credit card and bank transfer look the same.
+
+**Implications for understanding churn**
+
+Churn risk is concentrated among customers on Month-to-month contracts who pay by electronic check or use paperless billing. Automatic payment methods and longer contracts go together with much lower churn. These are associations, not causal effects, so we cannot conclude that changing a customer's payment method would reduce their churn.
+
+**Limitations and open questions**
+
+- The model leaves out tenure, add-on services and customer profile, which may explain part of these effects.
+- Does the electronic check effect remain after adding tenure and services such as Tech Support?
+- Does paperless billing itself matter, or does it only reflect customers who are more digitally engaged?
+- Why do electronic check customers churn more: payment friction, or a different customer segment?
+- How well can these billing variables predict churn on their own?
+
+
